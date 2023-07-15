@@ -58,27 +58,23 @@ class BertEmbeddings(nn.Module):
 		query_embeds=None,
 		past_key_values_length=0,
 	):
-		if input_ids is not None:
-			seq_length = input_ids.size()[1]
-		else:
-			seq_length = 0
-		
+		seq_length = input_ids.size()[1] if input_ids is not None else 0
 		if position_ids is None:
 			position_ids = self.position_ids[
 						   :, past_key_values_length: seq_length + past_key_values_length
 						   ].clone()
-		
+
 		if input_ids is not None:
 			embeddings = self.word_embeddings(input_ids)
 			if self.position_embedding_type == "absolute":
 				position_embeddings = self.position_embeddings(position_ids)
 				embeddings = embeddings + position_embeddings
-			
+
 			if query_embeds is not None:
 				embeddings = torch.cat((query_embeds, embeddings), dim=1)
 		else:
 			embeddings = query_embeds
-		
+
 		embeddings = self.LayerNorm(embeddings)
 		embeddings = self.dropout(embeddings)
 		return embeddings
@@ -94,11 +90,11 @@ class BertSelfAttention(nn.Module):
 				"The hidden size (%d) is not a multiple of the number of attention "
 				"heads (%d)" % (config.hidden_size, config.num_attention_heads)
 			)
-		
+
 		self.num_attention_heads = config.num_attention_heads
 		self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
 		self.all_head_size = self.num_attention_heads * self.attention_head_size
-		
+
 		self.query = nn.Linear(config.hidden_size, self.all_head_size)
 		if is_cross_attention:
 			self.key = nn.Linear(config.encoder_width, self.all_head_size)
@@ -106,15 +102,12 @@ class BertSelfAttention(nn.Module):
 		else:
 			self.key = nn.Linear(config.hidden_size, self.all_head_size)
 			self.value = nn.Linear(config.hidden_size, self.all_head_size)
-		
+
 		self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 		self.position_embedding_type = getattr(
 			config, "position_embedding_type", "absolute"
 		)
-		if (
-			self.position_embedding_type == "relative_key"
-			or self.position_embedding_type == "relative_key_query"
-		):
+		if self.position_embedding_type in ["relative_key", "relative_key_query"]:
 			self.max_position_embeddings = config.max_position_embeddings
 			self.distance_embedding = nn.Embedding(
 				2 * config.max_position_embeddings - 1, self.attention_head_size
@@ -156,7 +149,7 @@ class BertSelfAttention(nn.Module):
 		# and values come from an encoder; the attention mask needs to be
 		# such that the encoder's padding tokens are not attended to.
 		is_cross_attention = encoder_hidden_states is not None
-		
+
 		if is_cross_attention:
 			key_layer = self.transpose_for_scores(self.key(encoder_hidden_states))
 			value_layer = self.transpose_for_scores(self.value(encoder_hidden_states))
@@ -169,20 +162,17 @@ class BertSelfAttention(nn.Module):
 		else:
 			key_layer = self.transpose_for_scores(self.key(hidden_states))
 			value_layer = self.transpose_for_scores(self.value(hidden_states))
-		
+
 		mixed_query_layer = self.query(hidden_states)
-		
+
 		query_layer = self.transpose_for_scores(mixed_query_layer)
-		
+
 		past_key_value = (key_layer, value_layer)
-		
+
 		# Take the dot product between "query" and "key" to get the raw attention scores.
 		attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-		
-		if (
-			self.position_embedding_type == "relative_key"
-			or self.position_embedding_type == "relative_key_query"
-		):
+
+		if self.position_embedding_type in ["relative_key", "relative_key_query"]:
 			seq_length = hidden_states.size()[1]
 			position_ids_l = torch.arange(
 				seq_length, dtype=torch.long, device=hidden_states.device
@@ -197,7 +187,7 @@ class BertSelfAttention(nn.Module):
 			positional_embedding = positional_embedding.to(
 				dtype=query_layer.dtype
 			)  # fp16 compatibility
-			
+
 			if self.position_embedding_type == "relative_key":
 				relative_position_scores = torch.einsum(
 					"bhld,lrd->bhlr", query_layer, positional_embedding
@@ -215,37 +205,37 @@ class BertSelfAttention(nn.Module):
 					+ relative_position_scores_query
 					+ relative_position_scores_key
 				)
-		
+
 		attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 		if attention_mask is not None:
 			# Apply the attention mask is (precomputed for all layers in BertModel forward() function)
 			attention_scores = attention_scores + attention_mask
-		
+
 		# Normalize the attention scores to probabilities.
 		attention_probs = nn.Softmax(dim=-1)(attention_scores)
-		
+
 		if is_cross_attention and self.save_attention:
 			self.save_attention_map(attention_probs)
 			attention_probs.register_hook(self.save_attn_gradients)
-		
+
 		# This is actually dropping out entire tokens to attend to, which might
 		# seem a bit unusual, but is taken from the original Transformer paper.
 		attention_probs_dropped = self.dropout(attention_probs)
-		
+
 		# Mask heads if we want to
 		if head_mask is not None:
 			attention_probs_dropped = attention_probs_dropped * head_mask
-		
+
 		context_layer = torch.matmul(attention_probs_dropped, value_layer)
-		
+
 		context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
 		new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
 		context_layer = context_layer.view(*new_context_layer_shape)
-		
+
 		outputs = (
 			(context_layer, attention_probs) if output_attentions else (context_layer,)
 		)
-		
+
 		outputs = outputs + (past_key_value,)
 		return outputs
 
@@ -312,11 +302,8 @@ class BertAttention(nn.Module):
 			output_attentions,
 		)
 		attention_output = self.output(self_outputs[0], hidden_states)
-		
-		outputs = (attention_output,) + self_outputs[
-										1:
-										]  # add attentions if we output them
-		return outputs
+
+		return (attention_output,) + self_outputs[1:]
 
 class BertIntermediate(nn.Module):
 	def __init__(self, config):
@@ -445,13 +432,11 @@ class BertLayer(nn.Module):
 	
 	def feed_forward_chunk(self, attention_output):
 		intermediate_output = self.intermediate(attention_output)
-		layer_output = self.output(intermediate_output, attention_output)
-		return layer_output
+		return self.output(intermediate_output, attention_output)
 	
 	def feed_forward_chunk_query(self, attention_output):
 		intermediate_output = self.intermediate_query(attention_output)
-		layer_output = self.output_query(intermediate_output, attention_output)
-		return layer_output
+		return self.output_query(intermediate_output, attention_output)
 
 class BertEncoder(nn.Module):
 	def __init__(self, config):
@@ -612,8 +597,7 @@ class BertOnlyMLMHead(nn.Module):
 		self.predictions = BertLMPredictionHead(config)
 	
 	def forward(self, sequence_output):
-		prediction_scores = self.predictions(sequence_output)
-		return prediction_scores
+		return self.predictions(sequence_output)
 
 class BertPreTrainedModel(PreTrainedModel):
 	"""
@@ -705,17 +689,17 @@ class BertModel(BertPreTrainedModel):
 			# - if the model is an encoder, make the mask broadcastable to [batch_size, num_heads, seq_length, seq_length]
 			if is_decoder:
 				batch_size, seq_length = input_shape
-				
+
 				seq_ids = torch.arange(seq_length, device=device)
 				causal_mask = (
 					seq_ids[None, None, :].repeat(batch_size, seq_length, 1)
 					<= seq_ids[None, :, None]
 				)
-				
+
 				# add a prefix ones mask to the causal mask
 				# causal and attention masks must have same type with pytorch version < 1.3
 				causal_mask = causal_mask.to(attention_mask.dtype)
-				
+
 				if causal_mask.shape[1] < attention_mask.shape[1]:
 					prefix_seq_len = attention_mask.shape[1] - causal_mask.shape[1]
 					if has_query:  # UniLM style attention mask
@@ -748,11 +732,9 @@ class BertModel(BertPreTrainedModel):
 				extended_attention_mask = attention_mask[:, None, None, :]
 		else:
 			raise ValueError(
-				"Wrong shape for input_ids (shape {}) or attention_mask (shape {})".format(
-					input_shape, attention_mask.shape
-				)
+				f"Wrong shape for input_ids (shape {input_shape}) or attention_mask (shape {attention_mask.shape})"
 			)
-		
+
 		# Since attention_mask is 1.0 for positions we want to attend and 0.0 for
 		# masked positions, this operation will create a tensor which is 0.0 for
 		# positions we want to attend and -10000.0 for masked positions.
